@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>HTML 5 Boilerplate</title>
+    <style>
+#drop_zone {
+  border: 5px solid blue;
+  border-radius: 10px;
+  padding: 10px;
+  width:  200px;
+  height: 100px;
+}
+canvas {
+  border:1px silver solid;
+}
+    </style>
+  </head>
+  <body>
+	<div id="drop_zone" ondrop="dropHandler(event);" ondragover="dragOverHandler(event);">Drop level file here</div>
+	<h2>BLKS</h2>
+	<canvas id="blocks"></canvas>
+	<h2>MAPD</h2>
+	<canvas id="mapdata"></canvas>
+	<script>
+	function dragOverHandler(ev) {
+	  ev.preventDefault();
+	}
+
+let f;
+
+function dropHandler(ev) {
+  ev.preventDefault();
+
+  if (ev.dataTransfer.items) {
+    // Use DataTransferItemList interface to access the file(s)
+    for (var i = 0; i < ev.dataTransfer.items.length; i++) {
+      // If dropped items aren't files, reject them
+      if (ev.dataTransfer.items[i].kind === 'file') {
+        var file = ev.dataTransfer.items[i].getAsFile();
+        console.log('.x. file[' + i + '].name = ' + file.name);
+	file.arrayBuffer().then((buf) => decodeLevel(buf));
+      }
+    }
+  } else {
+    // Use DataTransfer interface to access the file(s)
+    for (var i = 0; i < ev.dataTransfer.files.length; i++) {
+      console.log('... file[' + i + '].name = ' + ev.dataTransfer.files[i].name);
+    }
+  }
+}
+function decodePalette(buf) {
+	let palette = [];
+	let ta = new Uint8Array(buf);
+	for(let i = 0; i < buf.byteLength; i += 3) {
+		palette.push({r: ta[i], g: ta[i+1], b: ta[i+2]});
+	}
+	return palette;
+}
+
+function decodeMapData(buf) {
+	let ta = new Uint16Array(buf);
+	let mapWidth = ta[0];
+	let mapHeight = ta[1];
+	let c = document.getElementById("mapdata");
+	let ctx = c.getContext("2d");
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	let blocks = document.getElementById("blocks");
+	let helper = document.createElement("canvas");
+	helper.width = 32;
+	helper.height = 15;
+	let hctx = helper.getContext("2d");
+	hctx.translate(16,8);
+	c.width = mapWidth * 16 + 100;
+	c.height = mapHeight * 7.5 + 150;
+	ctx.translate(0, -Math.floor(c.height / 2));
+	let vCenter = Math.ceil(c.height / 2);
+	let hCenter = Math.ceil(c.width / 2);
+	let offset = 2, x = 0, y = 0;
+	while(offset < ta.length) {
+		let tile = ta[offset]; offset += 1;
+		let hflip = (tile & 0x1000) != 0;
+		let vflip = (tile & 0x2000) != 0;
+		let flip = tile >> 12;
+		tile = tile & 0x0FFF;
+		let tx = tile % 25;
+		let ty = (tile - tx) / 25;
+		if(!hflip && !vflip) {
+			ctx.drawImage(blocks, tx * 32, ty * 15, 32, 15, hCenter + (x - y) * 16, 8 * x + 8 * y, 32, 15);
+		} else {
+			hctx.save();
+			hctx.clearRect(-16,-8,32,16);
+			hctx.scale((hflip ? -1 : 1), (vflip ? -1 : 1));
+	                hctx.drawImage(blocks, tx * 32, ty * 15, 32, 15, -16,  -8 + (vflip ? 1 : 0) , 32, 15);
+			hctx.restore();
+                        ctx.drawImage(helper, hCenter + (x - y) * 16, 8 * x + 8 * y, 32, 15);
+		}
+		x += 1;
+		if(x == mapWidth) {
+			y += 1;
+			x = 0;
+		}
+	}
+}
+
+function decodeBlocks(buf, palette) {
+	let numBlocks = buf.byteLength / 256;
+	let c = document.getElementById("blocks");
+	c.width = 32 * 25;
+	c.height = 15 * Math.ceil(numBlocks / 25);
+	let ctx = c.getContext("2d");
+	ctx.fillStyle = "rgba(0, 0, 0, 0)";
+	let blockX = 0;
+	let blockY = 0;
+	let offset = 0;
+	let ta = new Uint8Array(buf);
+	while(offset < ta.length) {
+		ctx.fillRect(blockX * 32, blockY * 15, 32, 15);
+		let data = ctx.getImageData(blockX * 32, blockY * 15, 32, 15);
+		let row = 4; 
+		for(y = 0; y < 15; y += 1) {
+			let rowOffset = 16 - row / 2;
+			for(x = 0; x < row; x += 1) {
+				let color = palette[ta[offset]]; offset += 1;
+				let dataPos = (y * 32 + rowOffset + x) * 4;
+                                data.data[dataPos] = color.r;
+                                data.data[dataPos + 1] = color.g;
+                                data.data[dataPos + 2] = color.b;
+				data.data[dataPos + 3] = 255;
+			}
+			row += y < 7 ? 4 : -4;
+		 }
+		ctx.putImageData(data, blockX * 32, blockY * 15);
+		blockX += 1;
+		if(blockX == 25) {
+			blockX = 0;
+			blockY += 1;
+		}
+	}
+}
+
+
+function decodeLevel(buf) {
+	let dv = new DataView(buf);
+	let offset = 12; //skip initial FORM{size}MAPS tags, which are weird anyway
+	let chunks = {};
+	let dec = new TextDecoder()
+
+	while(offset < dv.byteLength) {
+		let chunkName = dec.decode(buf.slice(offset, offset + 4)); offset += 4;
+		let chunkSize = dv.getUint32(offset, false); offset += 4; //BE!
+		chunks[chunkName] = buf.slice(offset, offset + chunkSize); offset += chunkSize;
+	}
+	let palette = decodePalette(chunks.CMAP);
+	decodeBlocks(chunks.BLKS, palette);
+	decodeMapData(chunks.MAPD)
+	console.log(chunks, palette);
+}
+        </script>
+  </body>
+</html>
